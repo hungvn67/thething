@@ -1,17 +1,16 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
-  Heart, Sparkles, MessageCircle, Image as ImageIcon, User, Send, 
+  Heart, Sparkles, MessageCircle, Image as ImageIcon, User as UserIcon, Send, 
   RefreshCw, ShieldAlert, BookOpen, Music, Smile, Frown, Meh, 
   Activity, Zap, Wind, Pause, Check, X, 
   Users, MessageSquare, LogOut, Plus, Trash2, Calendar, Edit2, Save, Layout, Lightbulb, Search, Settings, MapPin,
   Volume2, Wand2, Radio
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
-import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
+import { getAuth, signInAnonymously, onAuthStateChanged, User as FirebaseUser } from 'firebase/auth';
 import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, addDoc, updateDoc, deleteDoc, query, orderBy, serverTimestamp } from 'firebase/firestore';
 
 // --- CONFIG ---
-// FIX: Set empty string to use environment variable
 const apiKey = ""; 
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 const GEMINI_TTS_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`;
@@ -52,6 +51,7 @@ interface UserState {
   name: string;
   username: string;
   bio?: string;
+  energy?: string; 
 }
 
 interface ChatSession { id: string; title: string; createdAt: any; preview: string; }
@@ -87,22 +87,17 @@ const pcmToWav = (pcmData: Uint8Array, sampleRate: number = 24000) => {
   const totalDataLen = pcmData.length;
   const totalLen = totalDataLen + 36;
 
-  // RIFF chunk descriptor
   writeString(view, 0, 'RIFF');
   view.setUint32(4, totalLen, true);
   writeString(view, 8, 'WAVE');
-
-  // fmt sub-chunk
   writeString(view, 12, 'fmt ');
-  view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
-  view.setUint16(20, 1, true); // AudioFormat (1 for PCM)
-  view.setUint16(22, 1, true); // NumChannels (1 for Mono)
-  view.setUint32(24, sampleRate, true); // SampleRate
-  view.setUint32(28, sampleRate * 2, true); // ByteRate
-  view.setUint16(32, 2, true); // BlockAlign
-  view.setUint16(34, 16, true); // BitsPerSample
-
-  // data sub-chunk
+  view.setUint32(16, 16, true); 
+  view.setUint16(20, 1, true); 
+  view.setUint16(22, 1, true); 
+  view.setUint32(24, sampleRate, true); 
+  view.setUint32(28, sampleRate * 2, true); 
+  view.setUint16(32, 2, true); 
+  view.setUint16(34, 16, true); 
   writeString(view, 36, 'data');
   view.setUint32(40, totalDataLen, true);
 
@@ -180,7 +175,6 @@ const playTextToSpeech = async (text: string) => {
           bytes[i] = binaryString.charCodeAt(i);
       }
       const wavBytes = pcmToWav(bytes);
-      // FIX: Use wavBytes directly
       const audioBlob = new Blob([wavBytes], { type: 'audio/wav' }); 
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
@@ -205,7 +199,6 @@ const Toast = ({ msg, onClose }: { msg: string, onClose: () => void }) => {
 }
 
 // --- HELPER COMPONENTS ---
-// FIX: Added explicit interfaces to prevent "implicit any" build errors
 interface AuthFormProps {
   onLogin: (u: string, p: string) => void;
   onRegister: (u: string, p: string, n: string) => void;
@@ -221,7 +214,7 @@ const AuthForm = ({onLogin, onRegister, onGuest}: AuthFormProps) => {
       <button onClick={()=>isLogin?onLogin(u,p):onRegister(u,p,n)} className="w-full py-4 bg-white text-indigo-900 rounded-2xl font-bold hover:bg-indigo-50 shadow-lg hover:shadow-xl transition-all text-lg mt-4">{isLogin?'Đăng Nhập':'Đăng Ký'}</button>
       <div className="mt-6 text-center">
         <button onClick={()=>setIsLogin(!isLogin)} className="text-white/80 font-bold hover:text-white hover:underline text-sm mb-4 block">{isLogin?'Chưa có tài khoản? Đăng ký ngay':'Đã có tài khoản? Đăng nhập'}</button>
-        <button onClick={onGuest} className="text-white/60 hover:text-white text-sm font-medium flex items-center justify-center gap-2 w-full py-2 transition-all"><User size={16}/> Tiếp tục với chế độ Khách</button>
+        <button onClick={onGuest} className="text-white/60 hover:text-white text-sm font-medium flex items-center justify-center gap-2 w-full py-2 transition-all"><UserIcon size={16}/> Tiếp tục với chế độ Khách</button>
       </div>
     </>
   )
@@ -283,7 +276,7 @@ const BreathingExercise = ({ onClose }: {onClose: () => void}) => {
   );
 };
 
-const GratitudeModal = ({ onClose, onSave, entries, onDelete }: {onClose: () => void, onSave: (t: string) => void, entries: any[], onDelete: (id: string) => void}) => {
+const GratitudeModal = ({ onClose, onSave, entries, onDelete }: {onClose: () => void, onSave: (t: string) => void, entries: GratitudeEntry[], onDelete: (id: string) => void}) => {
   const [t, setT] = useState('');
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-in fade-in zoom-in duration-300">
@@ -294,8 +287,7 @@ const GratitudeModal = ({ onClose, onSave, entries, onDelete }: {onClose: () => 
           <textarea value={t} onChange={e=>setT(e.target.value)} className="w-full p-5 bg-amber-50/50 rounded-2xl focus:outline-none h-32 border border-amber-100 focus:bg-white focus:ring-2 focus:ring-amber-200 transition-all resize-none text-slate-700 placeholder:text-amber-300" placeholder="Hôm nay bạn biết ơn điều gì?"/>
           <button onClick={()=>{if(t){onSave(t);setT('')}}} className="w-full py-3 bg-amber-500 text-white rounded-xl font-bold hover:bg-amber-600 shadow-md hover:shadow-lg transition-all transform active:scale-95">Lưu lại khoảnh khắc</button>
         </div>
-        <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar pr-2 min-h-0">{entries.map((e:any)=><div key={e.id} className="p-4 bg-white border border-slate-100 shadow-sm rounded-2xl text-sm flex justify-between items-start group hover:border-amber-200 transition-colors"><div><p className="text-slate-700 leading-relaxed font-medium">{e.text}</p><span className="text-[11px] text-slate-400 mt-1 block font-bold">{e.date}</span></div>
-        {/* FIX: Removed opacity-0 so button is visible on mobile */}
+        <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar pr-2 min-h-0">{entries.map((e)=><div key={e.id} className="p-4 bg-white border border-slate-100 shadow-sm rounded-2xl text-sm flex justify-between items-start group hover:border-amber-200 transition-colors"><div><p className="text-slate-700 leading-relaxed font-medium">{e.text}</p><span className="text-[11px] text-slate-400 mt-1 block font-bold">{e.date}</span></div>
         <button onClick={()=>onDelete(e.id)} className="text-slate-400 hover:text-red-500 p-2 hover:bg-red-50 rounded-lg transition-all"><Trash2 size={18}/></button></div>)}</div>
       </div>
     </div>
@@ -304,7 +296,7 @@ const GratitudeModal = ({ onClose, onSave, entries, onDelete }: {onClose: () => 
 
 // --- MAIN COMPONENT ---
 export default function MindMirrorApp() {
-  const [firebaseUser, setFirebaseUser] = useState<any>(null);
+  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
   const [authMode, setAuthMode] = useState<AuthMode>(null);
   const [activeTab, setActiveTab] = useState<'chat' | 'art' | 'social' | 'profile'>('chat');
   const [userState, setUserState] = useState<UserState>({ emotion: 'neutral', topic: null, name: 'Bạn', username: 'guest', bio: 'Chưa có tiểu sử...' });
@@ -385,6 +377,7 @@ export default function MindMirrorApp() {
     }
   }, [isPlayingMusic]);
 
+  // FIX: Explicitly typed 'key' as 'keyof UserState' to allow assignment
   const handleOnboardingSelect = async (key: keyof UserState, value: any) => {
     const newState = { ...userState, [key]: value };
     setUserState(newState);
@@ -498,7 +491,6 @@ export default function MindMirrorApp() {
   };
 
   const handleDeletePost = async (postId: string) => { if (!confirm("Xóa bài viết?")) return; await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'posts', postId)); showToast("Đã xóa bài viết"); };
-  // FIX: Added confirmation logic to deletion
   const handleDeleteGratitude = async (entryId: string) => { if (!confirm("Bạn muốn xóa dòng nhật ký này?")) return; await deleteDoc(doc(db, `artifacts/${appId}/users/${userState.username}/gratitudes`, entryId)); showToast("Đã xóa nhật ký"); };
   
   const startEditingProfile = () => {
@@ -532,6 +524,7 @@ export default function MindMirrorApp() {
       <div className="max-w-md w-full bg-white/80 backdrop-blur-2xl rounded-[2.5rem] shadow-2xl p-10 animate-in fade-in slide-in-from-bottom-4 duration-500 border border-white/60 overflow-y-auto max-h-full">
         <div className="flex justify-between items-center mb-10"><h2 className="text-2xl font-bold text-slate-800 tracking-tight">Thấu Hiểu</h2><div className="flex gap-2">{INITIAL_QUESTIONS.map((_, idx) => (<div key={idx} className={`h-1.5 rounded-full transition-all duration-300 ${idx === onboardingStep ? 'bg-indigo-600 w-8' : idx < onboardingStep ? 'bg-indigo-300 w-2' : 'bg-slate-200 w-2'}`} />))}</div></div>
         <h3 className="text-xl mb-8 font-medium text-slate-700 leading-relaxed text-center">{INITIAL_QUESTIONS[onboardingStep].question}</h3>
+        {/* FIX: Cast 'id' to 'keyof UserState' to match handler signature */}
         <div className="space-y-4">{INITIAL_QUESTIONS[onboardingStep].options.map((opt) => (<button key={opt.value} onClick={() => handleOnboardingSelect(INITIAL_QUESTIONS[onboardingStep].id as keyof UserState, opt.value)} className="w-full flex items-center gap-5 p-5 rounded-[1.5rem] border border-white/50 bg-white/60 hover:bg-white hover:border-indigo-100 hover:shadow-lg transition-all text-left group transform hover:-translate-y-1"><div className="p-3 bg-indigo-50 rounded-2xl text-indigo-600 group-hover:bg-indigo-600 group-hover:text-white transition-colors shadow-sm">{opt.icon}</div><span className="font-semibold text-slate-700 group-hover:text-slate-900 text-lg flex-1">{opt.label}</span></button>))}</div>
       </div>
     </div>
@@ -555,13 +548,13 @@ export default function MindMirrorApp() {
           <NavBtn active={activeTab==='chat'} onClick={()=>setActiveTab('chat')} icon={<MessageCircle size={28}/>} label="Chat" color="text-indigo-600" />
           <NavBtn active={activeTab==='social'} onClick={()=>setActiveTab('social')} icon={<Users size={28}/>} label="Cộng đồng" color="text-teal-600" />
           <NavBtn active={activeTab==='art'} onClick={()=>setActiveTab('art')} icon={<ImageIcon size={28}/>} label="Sáng tạo" color="text-pink-600" />
-          <NavBtn active={activeTab==='profile'} onClick={()=>setActiveTab('profile')} icon={<User size={28}/>} label="Cá nhân" color="text-blue-600" />
+          <NavBtn active={activeTab==='profile'} onClick={()=>setActiveTab('profile')} icon={<UserIcon size={28}/>} label="Cá nhân" color="text-blue-600" />
         </nav>
         <nav className="md:hidden fixed bottom-0 left-0 right-0 h-20 bg-white/90 backdrop-blur-xl border-t border-slate-200 flex justify-around items-center z-50 pb-2">
           <NavBtn active={activeTab==='chat'} onClick={()=>setActiveTab('chat')} icon={<MessageCircle size={24}/>} color="text-indigo-600" />
           <NavBtn active={activeTab==='social'} onClick={()=>setActiveTab('social')} icon={<Users size={24}/>} color="text-teal-600" />
           <NavBtn active={activeTab==='art'} onClick={()=>setActiveTab('art')} icon={<ImageIcon size={24}/>} color="text-pink-600" />
-          <NavBtn active={activeTab==='profile'} onClick={()=>setActiveTab('profile')} icon={<User size={24}/>} color="text-blue-600" />
+          <NavBtn active={activeTab==='profile'} onClick={()=>setActiveTab('profile')} icon={<UserIcon size={24}/>} color="text-blue-600" />
         </nav>
 
         <main className="flex-1 overflow-hidden relative flex flex-col">
