@@ -2,16 +2,19 @@ import React, { useState, useEffect, useRef } from 'react';
 import { 
   Heart, Sparkles, MessageCircle, Image as ImageIcon, User, Send, 
   RefreshCw, ShieldAlert, BookOpen, Music, Smile, Frown, Meh, 
-  Activity, Zap, Wind, Play, Pause, Check, ChevronRight, X, 
-  Users, Lock, LogIn, MessageSquare, LogOut, Menu, Plus, Trash2, Calendar, Edit2, Save, MoreHorizontal, Layout, Lightbulb, Search, Settings, MapPin, Camera
+  Activity, Zap, Wind, Pause, Check, X, 
+  Users, MessageSquare, LogOut, Plus, Trash2, Calendar, Edit2, Save, Layout, Lightbulb, Search, Settings, MapPin,
+  Volume2, Wand2, Radio
 } from 'lucide-react';
 import { initializeApp } from 'firebase/app';
 import { getAuth, signInAnonymously, onAuthStateChanged } from 'firebase/auth';
 import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, addDoc, updateDoc, deleteDoc, query, orderBy, serverTimestamp } from 'firebase/firestore';
 
 // --- CONFIG ---
+// FIX: Set empty string to use environment variable
 const apiKey = "AIzaSyDH_kGg6vOhfi10rN19B6k3aIJtZYCgVd8"; 
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+const GEMINI_TTS_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`;
 
 const firebaseConfig = {
   apiKey: "AIzaSyAwLMtcyXkGjmL1VKKZB3MCW9xtISCeuAU",
@@ -40,8 +43,7 @@ const INITIAL_QUESTIONS = [
 
 // --- TYPES ---
 type EmotionType = 'happy' | 'sad' | 'anxious' | 'neutral' | 'angry' | 'creative';
-type FocusTopic = 'study' | 'family' | 'friends' | 'self' | 'future';
-type AuthMode = 'guest' | 'login' | 'register';
+type AuthMode = 'guest' | 'login' | 'register' | null;
 
 interface UserState {
   emotion: EmotionType;
@@ -72,13 +74,77 @@ const EMOTION_THEMES: Record<EmotionType, { bg: string, sidebar: string, accent:
 // --- LOGIC ---
 const cleanText = (text: string) => text.replace(/<\/?[^>]+(>|$)/g, "").replace(/^\s*>\s?/gm, "").replace(/\(\d+\s*từ\)/gi, "").trim();
 
-const callGeminiAI = async (prompt: string, context?: string): Promise<string> => {
+// Audio Utils
+const writeString = (view: DataView, offset: number, string: string) => {
+  for (let i = 0; i < string.length; i++) {
+    view.setUint8(offset + i, string.charCodeAt(i));
+  }
+};
+
+const pcmToWav = (pcmData: Uint8Array, sampleRate: number = 24000) => {
+  const header = new ArrayBuffer(44);
+  const view = new DataView(header);
+  const totalDataLen = pcmData.length;
+  const totalLen = totalDataLen + 36;
+
+  // RIFF chunk descriptor
+  writeString(view, 0, 'RIFF');
+  view.setUint32(4, totalLen, true);
+  writeString(view, 8, 'WAVE');
+
+  // fmt sub-chunk
+  writeString(view, 12, 'fmt ');
+  view.setUint32(16, 16, true); // Subchunk1Size (16 for PCM)
+  view.setUint16(20, 1, true); // AudioFormat (1 for PCM)
+  view.setUint16(22, 1, true); // NumChannels (1 for Mono)
+  view.setUint32(24, sampleRate, true); // SampleRate
+  view.setUint32(28, sampleRate * 2, true); // ByteRate
+  view.setUint16(32, 2, true); // BlockAlign
+  view.setUint16(34, 16, true); // BitsPerSample
+
+  // data sub-chunk
+  writeString(view, 36, 'data');
+  view.setUint32(40, totalDataLen, true);
+
+  const wavBuffer = new Uint8Array(header.byteLength + pcmData.length);
+  wavBuffer.set(new Uint8Array(header), 0);
+  wavBuffer.set(pcmData, 44);
+
+  return wavBuffer;
+};
+
+// Generic helper for different Gemini modes
+const runGemini = async (prompt: string, systemInstruction: string) => {
   try {
-    const fullPrompt = `Vai trò: Bạn là Minh - tri kỷ sâu sắc. Trạng thái user: ${context}. Yêu cầu: Không HTML, không Markdown, không đếm từ. Nói ít hiểu nhiều, thấu cảm. User: "${prompt}"`;
-    const response = await fetch(GEMINI_URL, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ contents: [{ parts: [{ text: fullPrompt }] }] }) });
+    const response = await fetch(GEMINI_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: prompt }] }],
+        systemInstruction: { parts: [{ text: systemInstruction }] }
+      })
+    });
     const data = await response.json();
     return cleanText(data.candidates?.[0]?.content?.parts?.[0]?.text || "....");
-  } catch (e) { return "...."; }
+  } catch (e) {
+    console.error("Gemini Error:", e);
+    return "....";
+  }
+};
+
+const callGeminiAI = async (prompt: string, context?: string): Promise<string> => {
+  const system = `Vai trò: Bạn là Hiếu - tri kỷ sâu sắc. Trạng thái user: ${context}. Yêu cầu: Không HTML, không Markdown, không đếm từ. Nói ít hiểu nhiều, thấu cảm.`;
+  return runGemini(prompt, system);
+};
+
+const callGeminiPolisher = async (draft: string): Promise<string> => {
+  const system = `Role: Empathetic Editor. Task: Rewrite the user's social media post to be more poetic, gentle, and grammatically correct, while preserving the original core emotion and meaning. Output ONLY the rewritten text.`;
+  return runGemini(draft, system);
+};
+
+const callGeminiFutureSelf = async (emotion: string, topic: string): Promise<string> => {
+  const system = `Role: The user's Future Self (5 years later). Context: You have overcome the struggles of being ${emotion} about ${topic}. Tone: Reassuring, wise, mysterious but hopeful. Task: Write a short letter (max 50 words) to your past self (current user).`;
+  return runGemini("Write the letter now.", system);
 };
 
 const generateDailyMessage = async (userState: UserState): Promise<string> => {
@@ -88,6 +154,43 @@ const generateDailyMessage = async (userState: UserState): Promise<string> => {
     const data = await response.json();
     return cleanText(data.candidates?.[0]?.content?.parts?.[0]?.text || "Hôm nay là một món quà.");
   } catch (e) { return "Bình yên tại tâm."; }
+};
+
+const playTextToSpeech = async (text: string) => {
+  try {
+    const response = await fetch(GEMINI_TTS_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: `Say kindly: ${text}` }] }],
+        generationConfig: {
+          responseModalities: ["AUDIO"],
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Kore" } } }
+        }
+      })
+    });
+    const data = await response.json();
+    const base64Audio = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
+    
+    if (base64Audio) {
+      // Decode base64
+      const binaryString = window.atob(base64Audio);
+      const len = binaryString.length;
+      const bytes = new Uint8Array(len);
+      for (let i = 0; i < len; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+      }
+      // Convert PCM to WAV
+      const wavBytes = pcmToWav(bytes);
+      const audioBlob = new Blob([wavBytes.buffer], { type: 'audio/wav' }); 
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const audio = new Audio(audioUrl);
+      audio.play().catch(e => console.error("Audio playback failed:", e));
+    }
+  } catch (e) {
+    console.error("TTS Error:", e);
+    // Silent fail for user experience
+  }
 };
 
 const generateImage = async (prompt: string): Promise<string> => {
@@ -136,7 +239,10 @@ const DailyMessageModal = ({message, onClose}: any) => (
       <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4 text-amber-500"><Lightbulb size={32}/></div>
       <h3 className="text-xl font-bold text-slate-800 mb-4">Thông điệp hôm nay</h3>
       <p className="text-slate-600 text-lg font-medium italic leading-relaxed">"{message}"</p>
-      <button onClick={onClose} className="mt-8 px-8 py-3 bg-slate-800 text-white rounded-xl font-bold hover:bg-slate-700 transition-all">Đã nhận</button>
+      <div className="flex justify-center gap-4 mt-8">
+        <button onClick={() => playTextToSpeech(message)} className="px-6 py-3 bg-indigo-100 text-indigo-600 rounded-xl font-bold hover:bg-indigo-200 transition-all flex items-center gap-2"><Volume2 size={20}/> Nghe</button>
+        <button onClick={onClose} className="px-8 py-3 bg-slate-800 text-white rounded-xl font-bold hover:bg-slate-700 transition-all">Đã nhận</button>
+      </div>
     </div>
   </div>
 );
@@ -172,7 +278,7 @@ const GratitudeModal = ({ onClose, onSave, entries, onDelete }: any) => {
           <textarea value={t} onChange={e=>setT(e.target.value)} className="w-full p-5 bg-amber-50/50 rounded-2xl focus:outline-none h-32 border border-amber-100 focus:bg-white focus:ring-2 focus:ring-amber-200 transition-all resize-none text-slate-700 placeholder:text-amber-300" placeholder="Hôm nay bạn biết ơn điều gì?"/>
           <button onClick={()=>{if(t){onSave(t);setT('')}}} className="w-full py-3 bg-amber-500 text-white rounded-xl font-bold hover:bg-amber-600 shadow-md hover:shadow-lg transition-all transform active:scale-95">Lưu lại khoảnh khắc</button>
         </div>
-        <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar pr-2 min-h-0">{entries.map((e:any)=><div key={e.id} className="p-4 bg-white border border-slate-100 shadow-sm rounded-2xl text-sm flex justify-between items-start group hover:border-amber-200 transition-colors"><div><p className="text-slate-700 leading-relaxed font-medium">{e.text}</p><span className="text-[11px] text-slate-400 mt-1 block font-bold">{e.date}</span></div><button onClick={()=>onDelete(e.id)} className="text-slate-300 hover:text-red-500 p-1.5 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100"><Trash2 size={16}/></button></div>)}</div>
+        <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar pr-2 min-h-0">{entries.map((e:any)=><div key={e.id} className="p-4 bg-white border border-slate-100 shadow-sm rounded-2xl text-sm flex justify-between items-start group hover:border-amber-200 transition-colors"><div><p className="text-slate-700 leading-relaxed font-medium">{e.text}</p><span className="text-[11px] text-slate-400 mt-1 block font-bold">{e.date}</span></div><button onClick={()=>onDelete(e.id)} className="text-slate-400 hover:text-red-500 p-2 hover:bg-red-50 rounded-lg transition-all"><Trash2 size={18}/></button></div>)}</div>
       </div>
     </div>
   );
@@ -200,11 +306,14 @@ export default function MindMirrorApp() {
   const [newPostContent, setNewPostContent] = useState('');
   const [commentInputs, setCommentInputs] = useState<{[key:string]: string}>({});
   const [isPosting, setIsPosting] = useState(false);
+  const [isPolishing, setIsPolishing] = useState(false); // State for polishing post
 
-  // Profile Edit
+  // Profile Edit & Features
   const [isEditingProfile, setIsEditingProfile] = useState(false);
   const [tempName, setTempName] = useState('');
   const [tempBio, setTempBio] = useState('');
+  const [futureLetter, setFutureLetter] = useState<string | null>(null); // State for Future Self letter
+  const [isGeneratingFuture, setIsGeneratingFuture] = useState(false);
 
   const [gallery, setGallery] = useState<ArtPiece[]>([]);
   const [artPrompt, setArtPrompt] = useState('');
@@ -248,7 +357,15 @@ export default function MindMirrorApp() {
   }, [currentSessionId, authMode]);
 
   useEffect(() => { chatEndRef.current?.scrollIntoView({ behavior: "smooth" }); }, [messages, isAiThinking]);
-  useEffect(() => { if(audioRef.current) isPlayingMusic ? audioRef.current.play().catch(()=>{}) : audioRef.current.pause(); }, [isPlayingMusic]);
+  useEffect(() => { 
+    if(audioRef.current) {
+        if (isPlayingMusic) {
+            audioRef.current.play().catch(e => console.log("Music play error (interaction needed?):", e));
+        } else {
+            audioRef.current.pause(); 
+        }
+    }
+  }, [isPlayingMusic]);
 
   const handleOnboardingSelect = async (key: keyof UserState, value: any) => {
     const newState = { ...userState, [key]: value };
@@ -302,6 +419,15 @@ export default function MindMirrorApp() {
     setIsAiThinking(false);
   };
 
+  const handlePolishPost = async () => {
+    if (!newPostContent.trim()) return;
+    setIsPolishing(true);
+    const polished = await callGeminiPolisher(newPostContent);
+    setNewPostContent(polished);
+    setIsPolishing(false);
+    showToast("Đã trau chuốt lại câu từ!");
+  };
+
   const handlePost = async () => {
     if (authMode === 'guest') return alert("Đăng nhập để chia sẻ.");
     if (!newPostContent.trim()) return;
@@ -309,7 +435,7 @@ export default function MindMirrorApp() {
     const postRef = await addDoc(collection(db, 'artifacts', appId, 'public', 'data', 'posts'), { author: userState.name, content: newPostContent, emotion: userState.emotion, timestamp: Date.now(), likes: 0, comments: [], isAiApproved: true });
     setNewPostContent(''); setIsPosting(false);
     const reply = await callGeminiAI(newPostContent, "User vừa đăng bài");
-    if((await getDoc(postRef)).exists()) await updateDoc(postRef, { comments: [{ id: 'ai-init', author: 'Minh', content: reply, isAi: true, timestamp: Date.now() }] });
+    if((await getDoc(postRef)).exists()) await updateDoc(postRef, { comments: [{ id: 'ai-init', author: 'Hiếu', content: reply, isAi: true, timestamp: Date.now() }] });
     showToast("Đã đăng bài viết mới!");
   };
 
@@ -346,8 +472,16 @@ export default function MindMirrorApp() {
     showToast("Đã tạo ảnh thành công!");
   };
 
+  const handleGenerateFutureLetter = async () => {
+    setIsGeneratingFuture(true);
+    const letter = await callGeminiFutureSelf(userState.emotion, userState.topic || "cuộc sống");
+    setFutureLetter(letter);
+    setIsGeneratingFuture(false);
+  };
+
   const handleDeletePost = async (postId: string) => { if (!confirm("Xóa bài viết?")) return; await deleteDoc(doc(db, 'artifacts', appId, 'public', 'data', 'posts', postId)); showToast("Đã xóa bài viết"); };
-  const handleDeleteGratitude = async (entryId: string) => { await deleteDoc(doc(db, `artifacts/${appId}/users/${userState.username}/gratitudes`, entryId)); showToast("Đã xóa nhật ký"); };
+  // FIX: Added confirmation logic to deletion
+  const handleDeleteGratitude = async (entryId: string) => { if (!confirm("Bạn muốn xóa dòng nhật ký này?")) return; await deleteDoc(doc(db, `artifacts/${appId}/users/${userState.username}/gratitudes`, entryId)); showToast("Đã xóa nhật ký"); };
   
   const startEditingProfile = () => {
     setTempName(userState.name);
@@ -387,9 +521,9 @@ export default function MindMirrorApp() {
 
   return (
     <div className={`fixed inset-0 ${theme.bg} font-sans transition-colors duration-1000 flex flex-col h-[100dvh]`}>
-      <audio ref={audioRef} loop src="https://cdn.pixabay.com/download/audio/2022/05/27/audio_1808fbf07a.mp3" />
+      <audio ref={audioRef} loop src="https://assets.mixkit.co/music/preview/mixkit-sleepy-cat-135.mp3" onError={(e) => console.log("Audio load error (often due to CORS/network, music skipped)", e)} />
       {showBreathing && <BreathingExercise onClose={() => setShowBreathing(false)} />}
-      {showGratitude && <GratitudeModal onClose={() => setShowGratitude(false)} entries={gratitudeEntries} onDelete={handleDeleteGratitude} onSave={async(t)=>{ if(authMode==='login') await addDoc(collection(db,`artifacts/${appId}/users/${userState.username}/gratitudes`),{text:t,date:new Date().toLocaleDateString()})}} />}
+      {showGratitude && <GratitudeModal onClose={() => setShowGratitude(false)} entries={gratitudeEntries} onDelete={handleDeleteGratitude} onSave={async(t: string)=>{ if(authMode==='login') await addDoc(collection(db,`artifacts/${appId}/users/${userState.username}/gratitudes`),{text:t,date:new Date().toLocaleDateString()})}} />}
       {dailyMessage && <DailyMessageModal message={dailyMessage} onClose={() => setDailyMessage(null)} />}
       {toastMsg && <Toast msg={toastMsg} onClose={() => setToastMsg(null)} />}
 
@@ -424,8 +558,8 @@ export default function MindMirrorApp() {
               <div className="flex-1 flex flex-col h-full relative bg-white/40 backdrop-blur-sm">
                 <div className="flex-1 overflow-y-auto p-4 md:p-8 space-y-6 custom-scrollbar scroll-smooth">
                   {messages.length === 0 && <div className="h-full flex flex-col items-center justify-center text-slate-400 opacity-60"><MessageCircle size={80} strokeWidth={1} /><p className="mt-6 text-lg font-medium">Bắt đầu hành trình...</p></div>}
-                  {messages.map((msg) => (<div key={msg.id} className={`flex ${msg.sender==='user'?'justify-end':'justify-start'} animate-in slide-in-from-bottom-2 duration-300`}><div className={`max-w-[85%] md:max-w-[70%] p-6 rounded-[2rem] shadow-sm text-[16px] leading-relaxed relative group ${msg.sender==='user'?'bg-white text-slate-800 rounded-tr-sm ml-12 border border-white/60':`${theme.bubble} text-slate-800 rounded-tl-sm border border-white/50 mr-12`}`}>{msg.sender==='ai'&&<div className={`absolute -top-3 -left-3 w-10 h-10 rounded-full flex items-center justify-center text-white text-[12px] font-bold shadow-md ring-4 ring-white/50 ${theme.accent}`}>Minh</div>}{msg.text}</div></div>))}
-                  {isAiThinking && <div className="flex items-center gap-2 text-slate-500 text-sm ml-4 animate-pulse p-2">Minh đang ngẫm nghĩ...</div>}
+                  {messages.map((msg) => (<div key={msg.id} className={`flex ${msg.sender==='user'?'justify-end':'justify-start'} animate-in slide-in-from-bottom-2 duration-300`}><div className={`max-w-[85%] md:max-w-[70%] p-6 rounded-[2rem] shadow-sm text-[16px] leading-relaxed relative group ${msg.sender==='user'?'bg-white text-slate-800 rounded-tr-sm ml-12 border border-white/60':`${theme.bubble} text-slate-800 rounded-tl-sm border border-white/50 mr-12`}`}>{msg.sender==='ai'&&<div className={`absolute -top-3 -left-3 w-10 h-10 rounded-full flex items-center justify-center text-white text-[12px] font-bold shadow-md ring-4 ring-white/50 ${theme.accent}`}>Hiếu</div>}{msg.text}</div></div>))}
+                  {isAiThinking && <div className="flex items-center gap-2 text-slate-500 text-sm ml-4 animate-pulse p-2">Hiếu đang ngẫm nghĩ...</div>}
                   <div ref={chatEndRef} />
                 </div>
                 <div className="p-6 bg-white/70 backdrop-blur-xl border-t border-white/40 mb-20 md:mb-0 shadow-[0_-10px_40px_rgba(0,0,0,0.03)]"><div className="flex gap-3 max-w-4xl mx-auto items-end"><textarea value={chatInput} onChange={e=>setChatInput(e.target.value)} onKeyDown={e=>e.key==='Enter' && !e.shiftKey && (e.preventDefault(), handleSendMessage())} placeholder="Viết những gì đang trĩu nặng..." className="flex-1 bg-white rounded-3xl px-6 py-4 shadow-inner focus:outline-none focus:ring-2 focus:ring-indigo-300/50 resize-none h-[60px] min-h-[60px] max-h-[120px] text-slate-700 placeholder:text-slate-400 border border-slate-200"/><button onClick={handleSendMessage} disabled={!chatInput.trim()} className={`p-4 rounded-full text-white shadow-lg hover:scale-105 active:scale-95 transition-all disabled:opacity-50 ${theme.accent}`}><Send size={24}/></button></div></div>
@@ -438,7 +572,12 @@ export default function MindMirrorApp() {
               <div className="max-w-2xl mx-auto space-y-8">
                 <div className="bg-white/80 backdrop-blur rounded-[2.5rem] p-8 shadow-lg border border-white/60">
                   <textarea value={newPostContent} onChange={e=>setNewPostContent(e.target.value)} placeholder="Trải lòng cùng cộng đồng..." className="w-full bg-slate-50/80 rounded-3xl p-5 focus:outline-none focus:ring-2 focus:ring-teal-300/50 resize-none h-32 mb-4 text-slate-700 placeholder:text-slate-400 border border-slate-100 transition-all focus:bg-white"/>
-                  <div className="flex justify-end"><button onClick={handlePost} disabled={isPosting || !newPostContent.trim()} className="bg-teal-600 text-white px-8 py-3 rounded-2xl font-bold shadow-md hover:bg-teal-700 transition-all disabled:opacity-50 hover:shadow-lg">{isPosting ? 'Đang gửi...' : 'Chia sẻ'}</button></div>
+                  <div className="flex justify-between items-center">
+                    <button onClick={handlePolishPost} disabled={isPolishing || !newPostContent.trim()} className="text-indigo-600 hover:text-indigo-800 text-sm font-bold flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-indigo-50 transition-all disabled:opacity-50">
+                      {isPolishing ? <RefreshCw className="animate-spin" size={16}/> : <Wand2 size={16}/>} ✨ Trau chuốt
+                    </button>
+                    <button onClick={handlePost} disabled={isPosting || !newPostContent.trim()} className="bg-teal-600 text-white px-8 py-3 rounded-2xl font-bold shadow-md hover:bg-teal-700 transition-all disabled:opacity-50 hover:shadow-lg">{isPosting ? 'Đang gửi...' : 'Chia sẻ'}</button>
+                  </div>
                 </div>
                 {socialPosts.map(post => (
                   <div key={post.id} className="bg-white/90 backdrop-blur rounded-[2.5rem] p-8 shadow-sm border border-white/60 animate-in slide-in-from-bottom-4 duration-500 relative group hover:shadow-lg transition-all">
@@ -552,30 +691,53 @@ export default function MindMirrorApp() {
                     </div>
                   </div>
 
-                  {/* Right Column: Journey */}
-                  <div className="md:col-span-2 bg-white/80 backdrop-blur rounded-[2.5rem] p-8 shadow-lg border border-white/60 flex flex-col h-full min-h-[400px]">
-                    <h3 className="font-bold text-slate-700 mb-6 flex items-center gap-2 text-xl"><MapPin size={24} className="text-teal-500"/> Hành trình cảm xúc</h3>
-                    {gratitudeEntries.length === 0 ? (
-                      <div className="flex-1 flex flex-col items-center justify-center text-slate-400 opacity-60">
-                        <BookOpen size={48} className="mb-2"/>
-                        <p>Chưa có dòng nhật ký nào...</p>
-                      </div>
-                    ) : (
-                      <div className="space-y-4">
-                        {gratitudeEntries.slice(0, 5).map(entry => (
-                          <div key={entry.id} className="p-4 bg-white rounded-2xl shadow-sm border border-slate-100 flex gap-4">
-                            <div className="flex-none flex flex-col items-center justify-center bg-indigo-50 w-16 h-16 rounded-xl text-indigo-600">
-                              <span className="text-xs font-bold uppercase">{new Date().toLocaleString('default', { month: 'short' })}</span>
-                              <span className="text-xl font-bold">{new Date().getDate()}</span>
-                            </div>
-                            <div className="flex-1">
-                              <p className="text-slate-700 italic">"{entry.text}"</p>
-                              <p className="text-xs text-slate-400 mt-2 font-medium">Nhật ký biết ơn</p>
-                            </div>
+                  {/* Right Column: Journey & Future Letter */}
+                  <div className="md:col-span-2 space-y-6">
+                    {/* Future Self Letter Feature */}
+                    <div className="bg-white/80 backdrop-blur rounded-[2.5rem] p-8 shadow-lg border border-white/60 relative overflow-hidden">
+                      <div className="absolute top-0 right-0 p-4 opacity-20"><Radio size={100}/></div>
+                      <h3 className="font-bold text-indigo-900 mb-2 flex items-center gap-2 text-xl"><Sparkles size={24} className="text-indigo-500"/> Tín Hiệu Tương Lai</h3>
+                      <p className="text-indigo-800/70 mb-6 text-sm">Gửi một tín hiệu đến vũ trụ để nhận lời nhắn từ chính bạn ở 5 năm sau.</p>
+                      
+                      {futureLetter ? (
+                        <div className="bg-indigo-50/50 p-6 rounded-2xl border border-indigo-100 animate-in zoom-in duration-500">
+                          <p className="text-indigo-900 italic font-medium leading-relaxed mb-4">"{futureLetter}"</p>
+                          <div className="flex gap-3">
+                            <button onClick={()=>playTextToSpeech(futureLetter)} className="px-4 py-2 bg-white text-indigo-600 rounded-lg text-xs font-bold shadow-sm hover:shadow flex items-center gap-2"><Volume2 size={14}/> Nghe</button>
+                            <button onClick={()=>setFutureLetter(null)} className="px-4 py-2 bg-indigo-200 text-indigo-700 rounded-lg text-xs font-bold hover:bg-indigo-300">Đóng lại</button>
                           </div>
-                        ))}
-                      </div>
-                    )}
+                        </div>
+                      ) : (
+                        <button onClick={handleGenerateFutureLetter} disabled={isGeneratingFuture} className="w-full py-4 bg-gradient-to-r from-indigo-500 to-purple-500 text-white rounded-2xl font-bold shadow-lg hover:shadow-xl transition-all disabled:opacity-70 flex items-center justify-center gap-2">
+                          {isGeneratingFuture ? <RefreshCw className="animate-spin"/> : <Radio/>} Kết nối với Tương Lai
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="bg-white/80 backdrop-blur rounded-[2.5rem] p-8 shadow-lg border border-white/60 flex flex-col min-h-[300px]">
+                      <h3 className="font-bold text-slate-700 mb-6 flex items-center gap-2 text-xl"><MapPin size={24} className="text-teal-500"/> Hành trình cảm xúc</h3>
+                      {gratitudeEntries.length === 0 ? (
+                        <div className="flex-1 flex flex-col items-center justify-center text-slate-400 opacity-60">
+                          <BookOpen size={48} className="mb-2"/>
+                          <p>Chưa có dòng nhật ký nào...</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-4">
+                          {gratitudeEntries.slice(0, 5).map(entry => (
+                            <div key={entry.id} className="p-4 bg-white rounded-2xl shadow-sm border border-slate-100 flex gap-4">
+                              <div className="flex-none flex flex-col items-center justify-center bg-indigo-50 w-16 h-16 rounded-xl text-indigo-600">
+                                <span className="text-xs font-bold uppercase">{new Date().toLocaleString('default', { month: 'short' })}</span>
+                                <span className="text-xl font-bold">{new Date().getDate()}</span>
+                              </div>
+                              <div className="flex-1">
+                                <p className="text-slate-700 italic">"{entry.text}"</p>
+                                <p className="text-xs text-slate-400 mt-2 font-medium">Nhật ký biết ơn</p>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 </div>
               </div>
