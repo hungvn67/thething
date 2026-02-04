@@ -12,7 +12,7 @@ import { getFirestore, doc, setDoc, getDoc, collection, onSnapshot, addDoc, upda
 
 // --- CONFIG ---
 // FIX: Set empty string to use environment variable
-const apiKey = "AIzaSyDH_kGg6vOhfi10rN19B6k3aIJtZYCgVd8"; 
+const apiKey = ""; 
 const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
 const GEMINI_TTS_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-tts:generateContent?key=${apiKey}`;
 
@@ -29,7 +29,7 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = 'mind-mirror-final-v10'; // Phiên bản mới nhất
+const appId = 'mind-mirror-final-v10'; 
 
 // --- ICONS & CONSTANTS ---
 const ArrowRightCircle = ({size}:{size:number}) => <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16l4-4-4-4"/><path d="M8 12h8"/></svg>;
@@ -173,23 +173,21 @@ const playTextToSpeech = async (text: string) => {
     const base64Audio = data.candidates?.[0]?.content?.parts?.[0]?.inlineData?.data;
     
     if (base64Audio) {
-      // Decode base64
       const binaryString = window.atob(base64Audio);
       const len = binaryString.length;
       const bytes = new Uint8Array(len);
       for (let i = 0; i < len; i++) {
           bytes[i] = binaryString.charCodeAt(i);
       }
-      // Convert PCM to WAV
       const wavBytes = pcmToWav(bytes);
-      const audioBlob = new Blob([wavBytes.buffer], { type: 'audio/wav' }); 
+      // FIX: Use wavBytes directly
+      const audioBlob = new Blob([wavBytes], { type: 'audio/wav' }); 
       const audioUrl = URL.createObjectURL(audioBlob);
       const audio = new Audio(audioUrl);
       audio.play().catch(e => console.error("Audio playback failed:", e));
     }
   } catch (e) {
     console.error("TTS Error:", e);
-    // Silent fail for user experience
   }
 };
 
@@ -207,7 +205,13 @@ const Toast = ({ msg, onClose }: { msg: string, onClose: () => void }) => {
 }
 
 // --- HELPER COMPONENTS ---
-const AuthForm = ({onLogin, onRegister, onGuest}: any) => {
+// FIX: Added explicit interfaces to prevent "implicit any" build errors
+interface AuthFormProps {
+  onLogin: (u: string, p: string) => void;
+  onRegister: (u: string, p: string, n: string) => void;
+  onGuest: () => void;
+}
+const AuthForm = ({onLogin, onRegister, onGuest}: AuthFormProps) => {
   const [isLogin, setIsLogin] = useState(true); const [u, setU] = useState(''); const [p, setP] = useState(''); const [n, setN] = useState('');
   return (
     <>
@@ -223,17 +227,29 @@ const AuthForm = ({onLogin, onRegister, onGuest}: any) => {
   )
 }
 
-const NavBtn = ({active, onClick, icon, label, color}: any) => (
+interface NavBtnProps {
+  active: boolean;
+  onClick: () => void;
+  icon: React.ReactNode;
+  label?: string;
+  color?: string;
+}
+const NavBtn = ({active, onClick, icon, label, color}: NavBtnProps) => (
   <button onClick={onClick} className={`p-4 rounded-2xl transition-all duration-300 group relative flex items-center justify-center ${active ? `bg-white shadow-xl scale-110 ${color}` : 'text-slate-400 hover:bg-white/50 hover:text-slate-600'}`}>
     {icon} <span className="absolute left-16 bg-slate-800 text-white px-3 py-1.5 rounded-lg text-xs font-bold shadow-lg opacity-0 group-hover:opacity-100 transition-all whitespace-nowrap pointer-events-none md:block hidden transform translate-x-2 group-hover:translate-x-0 z-50">{label}</span>
   </button>
 );
 
-const IconButton = ({onClick, icon, active}: any) => (
+interface IconButtonProps {
+  onClick: () => void;
+  icon: React.ReactNode;
+  active?: boolean;
+}
+const IconButton = ({onClick, icon, active}: IconButtonProps) => (
   <button onClick={onClick} className={`p-3 rounded-full transition-all duration-300 ${active ? 'bg-indigo-100 text-indigo-600 ring-2 ring-indigo-200 shadow-inner' : 'bg-white/40 text-slate-600 hover:bg-white hover:shadow-md'}`}>{icon}</button>
 );
 
-const DailyMessageModal = ({message, onClose}: any) => (
+const DailyMessageModal = ({message, onClose}: {message: string, onClose: () => void}) => (
   <div className="fixed inset-0 z-[60] flex items-center justify-center p-6 bg-black/60 backdrop-blur-md animate-in fade-in duration-500" onClick={onClose}>
     <div className="bg-white rounded-[2rem] p-8 max-w-md w-full shadow-2xl animate-in zoom-in duration-300 relative text-center" onClick={e=>e.stopPropagation()}>
       <div className="w-16 h-16 bg-amber-100 rounded-full flex items-center justify-center mx-auto mb-4 text-amber-500"><Lightbulb size={32}/></div>
@@ -247,7 +263,7 @@ const DailyMessageModal = ({message, onClose}: any) => (
   </div>
 );
 
-const BreathingExercise = ({ onClose }: any) => {
+const BreathingExercise = ({ onClose }: {onClose: () => void}) => {
   const [phase, setPhase] = useState('Hít vào'); const [scale, setScale] = useState(1);
   useEffect(() => {
     const runCycle = () => {
@@ -267,7 +283,7 @@ const BreathingExercise = ({ onClose }: any) => {
   );
 };
 
-const GratitudeModal = ({ onClose, onSave, entries, onDelete }: any) => {
+const GratitudeModal = ({ onClose, onSave, entries, onDelete }: {onClose: () => void, onSave: (t: string) => void, entries: any[], onDelete: (id: string) => void}) => {
   const [t, setT] = useState('');
   return (
     <div className="fixed inset-0 bg-black/60 backdrop-blur-md z-50 flex items-center justify-center p-4 animate-in fade-in zoom-in duration-300">
@@ -278,7 +294,9 @@ const GratitudeModal = ({ onClose, onSave, entries, onDelete }: any) => {
           <textarea value={t} onChange={e=>setT(e.target.value)} className="w-full p-5 bg-amber-50/50 rounded-2xl focus:outline-none h-32 border border-amber-100 focus:bg-white focus:ring-2 focus:ring-amber-200 transition-all resize-none text-slate-700 placeholder:text-amber-300" placeholder="Hôm nay bạn biết ơn điều gì?"/>
           <button onClick={()=>{if(t){onSave(t);setT('')}}} className="w-full py-3 bg-amber-500 text-white rounded-xl font-bold hover:bg-amber-600 shadow-md hover:shadow-lg transition-all transform active:scale-95">Lưu lại khoảnh khắc</button>
         </div>
-        <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar pr-2 min-h-0">{entries.map((e:any)=><div key={e.id} className="p-4 bg-white border border-slate-100 shadow-sm rounded-2xl text-sm flex justify-between items-start group hover:border-amber-200 transition-colors"><div><p className="text-slate-700 leading-relaxed font-medium">{e.text}</p><span className="text-[11px] text-slate-400 mt-1 block font-bold">{e.date}</span></div><button onClick={()=>onDelete(e.id)} className="text-slate-400 hover:text-red-500 p-2 hover:bg-red-50 rounded-lg transition-all"><Trash2 size={18}/></button></div>)}</div>
+        <div className="flex-1 overflow-y-auto space-y-3 custom-scrollbar pr-2 min-h-0">{entries.map((e:any)=><div key={e.id} className="p-4 bg-white border border-slate-100 shadow-sm rounded-2xl text-sm flex justify-between items-start group hover:border-amber-200 transition-colors"><div><p className="text-slate-700 leading-relaxed font-medium">{e.text}</p><span className="text-[11px] text-slate-400 mt-1 block font-bold">{e.date}</span></div>
+        {/* FIX: Removed opacity-0 so button is visible on mobile */}
+        <button onClick={()=>onDelete(e.id)} className="text-slate-400 hover:text-red-500 p-2 hover:bg-red-50 rounded-lg transition-all"><Trash2 size={18}/></button></div>)}</div>
       </div>
     </div>
   );
